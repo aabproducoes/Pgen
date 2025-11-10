@@ -41,12 +41,12 @@
 
       <label class="small">Max password chars: <input id="maxLen" type="number" min="1" value="9"></label>
       <label class="small"><input id="startCornerChk" type="checkbox"> Start at random corner</label>
-      <label class="small">Speed (ms step): <input id="speed" type="number" min="50" value="400"></label>
+      <label class="small">Speed (ms step): <input id="speed" type="number" min="20" value="300"></label>
     </div>
 
     <div class="info">
       <div class="password">Generated password: <strong id="password">(none)</strong></div>
-      <div class="small">Arrows show movement direction. Lines connect centers of visited cells. The path stops when all cells are taken or max chars reached.</div>
+      <div class="small">Arrows show movement direction. Lines connect centers of visited cells. The path stops when the password length reaches the max or a safety step limit is hit.</div>
     </div>
   </div>
 
@@ -108,32 +108,47 @@ function segmentKey(r1,c1,r2,c2){const a=r1*3+c1,b=r2*3+c2;return a<b?`${a}-${b}
 
 function drawArrow(x1,y1,x2,y2){
   const svgns='http://www.w3.org/2000/svg';
-  const k=segmentKey(Math.round(y1),Math.round(x1),Math.round(y2),Math.round(x2));
-  const count=(lineVisits.get(k)||0)+1;
-  lineVisits.set(k,count);
-  const colors=['#58f','#f59e0b','#fb7185'];
-  const color=count<=colors.length?colors[count-1]:colors[colors.length-1];
-  const line=document.createElementNS(svgns,'line');
+  // normalize to nearest cell centers for segment key (use index values)
+  // compute nearest cell indices from coordinates
+  // note: coordinates passed are actual center px; convert to cell indices
+  const parentRect = boardEl.getBoundingClientRect();
+  const cellW = parentRect.width / 3;
+  const cellH = parentRect.height / 3;
+  const cx1 = Math.floor((x1) / cellW);
+  const cy1 = Math.floor((y1) / cellH);
+  const cx2 = Math.floor((x2) / cellW);
+  const cy2 = Math.floor((y2) / cellH);
+
+  const k = segmentKey(cy1, cx1, cy2, cx2);
+  const count = (lineVisits.get(k) || 0) + 1;
+  lineVisits.set(k, count);
+  const colors = ['#58f','#f59e0b','#fb7185'];
+  const color = count <= colors.length ? colors[count-1] : colors[colors.length-1];
+
+  const line = document.createElementNS(svgns,'line');
   line.setAttribute('x1',x1);line.setAttribute('y1',y1);line.setAttribute('x2',x2);line.setAttribute('y2',y2);
   line.setAttribute('stroke',color);line.setAttribute('stroke-width','6');line.setAttribute('stroke-linecap','round');
   overlay.appendChild(line);
-  const angle=Math.atan2(y2-y1,x2-x1);
-  const ax=x2-Math.cos(angle)*18,ay=y2-Math.sin(angle)*18;
-  const p1=`${x2},${y2}`,p2=`${ax-Math.sin(angle)*8},${ay+Math.cos(angle)*8}`,p3=`${ax+Math.sin(angle)*8},${ay-Math.cos(angle)*8}`;
-  const poly=document.createElementNS(svgns,'polygon');
-  poly.setAttribute('points',`${p1} ${p2} ${p3}`);poly.setAttribute('fill',color);
+
+  const angle = Math.atan2(y2-y1,x2-x1);
+  const ax = x2 - Math.cos(angle)*18, ay = y2 - Math.sin(angle)*18;
+  const p1 = `${x2},${y2}`, p2 = `${ax - Math.sin(angle)*8},${ay + Math.cos(angle)*8}`, p3 = `${ax + Math.sin(angle)*8},${ay - Math.cos(angle)*8}`;
+  const poly = document.createElementNS(svgns,'polygon');
+  poly.setAttribute('points',`${p1} ${p2} ${p3}`); poly.setAttribute('fill',color);
   overlay.appendChild(poly);
 }
 
 function randomCell(){const i=Math.floor(Math.random()*9);return{r:Math.floor(i/3),c:i%3}}
-function randomCorner(){const corners=[{r:0,c:0},{r:0,c:2},{r:2,c:0},{r:2,c:2}];return corners[Math.floor(Math.random()*4)];}
+function randomCorner(){const corners=[{r:0,c:0},{r:0,c:2},{r:2,c:0},{r:2,c:2}];return corners[Math.floor(Math.random()*4)]}
 
 function visit(r,c){
   const i=idx(r,c);const cell=cells[i];
-  const ch=cell.el.innerText||' ';cell.char=ch[0]||' ';
+  const ch = (cell.el.innerText || ' ')[0] || ' ';
+  cell.char = ch;
   visitedOrder.push({r,c,char:cell.char,x:cell.x,y:cell.y});
-  const occur=visitedOrder.filter(v=>v.r===r&&v.c===c).length;
+  const occur = visitedOrder.filter(v=>v.r===r && v.c===c).length;
   if(occur>1) cell.el.classList.add('revisit'); else cell.el.classList.add('visited');
+  return ch;
 }
 
 function randomDir(){
@@ -146,91 +161,126 @@ function randomDir(){
 
 async function runPattern(opts={startAtCorner:false}){
   resetState();
-  running=true;paused=false;
-  const maxLen=Math.max(1,Number(maxLenInput.value)||9);
-  const speed=Math.max(30,Number(speedInput.value)||300);
-  cells.forEach(cell=>{
-    const rect=cell.el.getBoundingClientRect();
-    const parentRect=boardEl.getBoundingClientRect();
-    cell.x=rect.left-parentRect.left+rect.width/2;
-    cell.y=rect.top-parentRect.top+rect.height/2;
-  });
-  let current=opts.startAtCorner?randomCorner():randomCell();
-  visit(current.r,current.c);
-  let last=visitedOrder[visitedOrder.length-1];
+  running=true; paused=false;
 
-  while(running && visitedOrder.length<maxLen && visitedOrder.length<9){
-    while(paused) await new Promise(r=>setTimeout(r,100));
-    const dir=randomDir();
-    let cr=current.r+dir.r,cc=current.c+dir.c;
-    let moved=false;let prev={r:current.r,c:current.c};
-    while(inBounds(cr,cc) && visitedOrder.length<maxLen && visitedOrder.length<9){
-      const from=cells[idx(prev.r,prev.c)],to=cells[idx(cr,cc)];
-      drawArrow(from.x,from.y,to.x,to.y);
-      visit(cr,cc);moved=true;
-      prev={r:cr,c:cc};current={r:cr,c:cc};
-      if(visitedOrder.length>=maxLen) break;
-      await new Promise(r=>setTimeout(r,speed));
-      cr+=dir.r;cc+=dir.c;
+  const desiredMax = Math.max(1, Number(maxLenInput.value) || 9);
+  const speed = Math.max(20, Number(speedInput.value) || 300);
+  const maxSteps = Math.max(200, desiredMax * 20); // safety cap
+  let steps = 0;
+
+  // refresh cell center coords
+  cells.forEach(cell=>{
+    const rect = cell.el.getBoundingClientRect();
+    const parentRect = boardEl.getBoundingClientRect();
+    cell.x = rect.left - parentRect.left + rect.width/2;
+    cell.y = rect.top - parentRect.top + rect.height/2;
+  });
+
+  let passStr = '';
+  let current = opts.startAtCorner ? randomCorner() : randomCell();
+  passStr += visit(current.r, current.c);
+  passwordEl.innerText = passStr || '(none)';
+
+  // optional jump animation (still counts chars if revisit)
+  if (opts.jumpToCorner) {
+    const corner = randomCorner();
+    const last = visitedOrder[visitedOrder.length-1];
+    const stepsAnim = 8;
+    for (let t=1; t<=stepsAnim; t++){
+      if(!running) return;
+      while(paused) await new Promise(r=>setTimeout(r,100));
+      const fx = last.x + ((corner.c * (boardEl.clientWidth/3) + (boardEl.clientWidth/6) - last.x) * t/stepsAnim);
+      const fy = last.y + ((corner.r * (boardEl.clientHeight/3) + (boardEl.clientHeight/6) - last.y) * t/stepsAnim);
+      overlay.innerHTML += `<circle cx="${fx}" cy="${fy}" r="3" fill="#8ef"></circle>`;
+      await new Promise(r=>setTimeout(r, speed/6));
     }
-    if(!moved) await new Promise(r=>setTimeout(r,speed/2));
+    current = corner;
+    passStr += visit(current.r, current.c);
+    passwordEl.innerText = passStr.slice(0, desiredMax) || '(none)';
   }
 
-  const pass=visitedOrder.map(v=>v.char||' ').join('').slice(0,Number(maxLen));
-  passwordEl.innerText=pass||'(none)';
-  running=false;
+  // main loop: continue until password string length reached OR steps exceeded
+  while (running && passStr.length < desiredMax && steps < maxSteps) {
+    while (paused) await new Promise(r=>setTimeout(r,100));
+
+    const dir = randomDir();
+    let cr = current.r + dir.r;
+    let cc = current.c + dir.c;
+    let moved = false;
+    let prevCoords = { r: current.r, c: current.c };
+
+    while (inBounds(cr, cc) && passStr.length < desiredMax && steps < maxSteps) {
+      const from = cells[idx(prevCoords.r, prevCoords.c)];
+      const to = cells[idx(cr, cc)];
+      drawArrow(from.x, from.y, to.x, to.y);
+
+      // visit and append char
+      const ch = visit(cr, cc);
+      passStr += ch;
+      passwordEl.innerText = passStr.slice(0, desiredMax);
+
+      moved = true;
+      prevCoords = { r: cr, c: cc };
+      current = { r: cr, c: cc };
+
+      steps++;
+      if (passStr.length >= desiredMax || steps >= maxSteps) break;
+
+      await new Promise(r=>setTimeout(r, speed));
+      cr += dir.r; cc += dir.c;
+    }
+
+    if (!moved) {
+      steps++;
+      await new Promise(r=>setTimeout(r, speed/2));
+    }
+  }
+
+  passwordEl.innerText = passStr.slice(0, desiredMax) || '(none)';
+  running = false;
 }
 
-document.getElementById('randomStart').addEventListener('click',()=>{
+document.getElementById('randomStart').addEventListener('click', ()=>{
   for(const c of cells){
-    const ch=String.fromCharCode(33+Math.floor(Math.random()*94));
-    c.el.innerText=ch;
+    const ch = String.fromCharCode(33 + Math.floor(Math.random()*94));
+    c.el.innerText = ch;
   }
-  const startCorner=document.getElementById('startCornerChk').checked;
-  runPattern({startAtCorner:startCorner,jumpToCorner:false});
+  const startCorner = document.getElementById('startCornerChk').checked;
+  runPattern({startAtCorner: startCorner, jumpToCorner:false});
 });
 
-document.getElementById('moveCorner').addEventListener('click',async()=>{
-  if(running) return;
-  cells.forEach(cell=>{
-    const rect=cell.el.getBoundingClientRect();
-    const parentRect=boardEl.getBoundingClientRect();
-    cell.x=rect.left-parentRect.left+rect.width/2;
-    cell.y=rect.top-parentRect.top+rect.height/2;
-  });
+document.getElementById('moveCorner').addEventListener('click', async ()=>{
+  if (running) return;
+  cells.forEach((cell)=>{ const rect = cell.el.getBoundingClientRect(); const parentRect = boardEl.getBoundingClientRect(); cell.x = rect.left - parentRect.left + rect.width/2; cell.y = rect.top - parentRect.top + rect.height/2; });
   resetState();
-  running=true;
-  const start=randomCell();
-  visit(start.r,start.c);
+  running = true;
+  const start = randomCell();
+  // record starting char
+  visit(start.r, start.c);
   await new Promise(r=>setTimeout(r,200));
-  await runPattern({startAtCorner:false,jumpToCorner:true});
-  running=false;
+  await runPattern({startAtCorner:false, jumpToCorner:true});
+  running = false;
 });
 
-let patternPromise=null;
-document.getElementById('startPattern').addEventListener('click',()=>{
-  if(running) return;
-  const startCorner=document.getElementById('startCornerChk').checked;
-  patternPromise=runPattern({startAtCorner:startCorner,jumpToCorner:false});
+document.getElementById('startPattern').addEventListener('click', ()=>{
+  if (running) return;
+  const startCorner = document.getElementById('startCornerChk').checked;
+  runPattern({startAtCorner:startCorner, jumpToCorner:false});
 });
 
-document.getElementById('pauseBtn').addEventListener('click',()=>{
-  paused=!paused;
-  document.getElementById('pauseBtn').innerText=paused?'Resume':'Pause';
+document.getElementById('pauseBtn').addEventListener('click', ()=>{
+  paused = !paused;
+  document.getElementById('pauseBtn').innerText = paused ? 'Resume' : 'Pause';
 });
-document.getElementById('resetBtn').addEventListener('click',()=>resetState());
-boardEl.addEventListener('focusout',e=>{
+document.getElementById('resetBtn').addEventListener('click', ()=> resetState());
+
+boardEl.addEventListener('focusout', (e)=>{
   if(e.target.classList && e.target.classList.contains('cell')){
-    if(e.target.innerText.length>1) e.target.innerText=e.target.innerText[0];
+    if(e.target.innerText.length>1) e.target.innerText = e.target.innerText[0];
   }
 });
-window.addEventListener('resize',()=>{
-  cells.forEach(cell=>{
-    const rect=cell.el.getBoundingClientRect();
-    const parentRect=boardEl.getBoundingClientRect();
-    cell.x=rect.left-parentRect.left+rect.width/2;
-    cell.y=rect.top-parentRect.top+rect.height/2;
-  });
+window.addEventListener('resize', ()=>{
+  cells.forEach((cell)=>{ const rect = cell.el.getBoundingClientRect(); const parentRect = boardEl.getBoundingClientRect(); cell.x = rect.left - parentRect.left + rect.width/2; cell.y = rect.top - parentRect.top + rect.height/2; });
 });
 </script>
 </body>
